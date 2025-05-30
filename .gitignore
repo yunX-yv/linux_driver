@@ -1,0 +1,14 @@
+SDK/Linux/compile_commands.json
+*.o
+SDK/Linux/.config
+Image
+zImage
+vmlinux.lds
+vmlinux
+piggy_data
+*.cmd
+*.mod
+*.mod.c
+.cache.mk
+Module.symvers
+modules.order
