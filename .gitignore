@@ -10,5 +10,6 @@ piggy_data
 *.mod
 *.mod.c
 .cache.mk
+.cache
 Module.symvers
 modules.order
