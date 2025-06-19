@@ -26,6 +26,10 @@ static const s16 default_init_sequence[] = {
 
     -2, 500, /* delay */
 
+    -1, 0x2A, 0x00, 0x2A, 0x00, 0x69, /* Column Address Set */
+
+    -1, 0x2B, 0x00, 0x01, 0x00, 0xA0, /* Page Address Set */
+
     /* FRMCTR1 - frame rate control: normal mode
      * frame rate = fosc / ((1 x 2 + 40) * (LINE + 2C + 2D))
      * frame rate = fosc / ((5 x 2 + 40) * (LINE + 3C + 3C))
@@ -74,10 +78,12 @@ static const s16 default_init_sequence[] = {
     /* PWCTR5 - Power Control */
     -1, 0xC4, 0x8A, 0xEE,
 
+    -1, 0x21, 
+
     /* VMCTR1 - Power Control */
     -1, 0xC5, 0x0E,
 
-    -1, MIPI_DCS_EXIT_INVERT_MODE,
+    // -1, MIPI_DCS_EXIT_INVERT_MODE,
 
     -1, MIPI_DCS_SET_PIXEL_FORMAT, MIPI_DCS_PIXEL_FMT_16BIT,
 
@@ -89,11 +95,7 @@ static const s16 default_init_sequence[] = {
 
     -2, 10, /* delay */
 
-    // -1, 0x2A, 0x00, 0x00, 0x00, 0x59, /* Column Address Set */
-
-    // -1, 0x2B, 0x00, 0x00, 0x00, 0x9F, /* Page Address Set */
-
-     -1, 0x2C,
+    //  -1, 0x2C,
     /* end marker */
     -3};
 
