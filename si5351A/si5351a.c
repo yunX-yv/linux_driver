@@ -1,11 +1,13 @@
+#include <asm/uaccess.h>
 #include <linux/cdev.h>
 #include <linux/clk.h>
 #include <linux/device.h>
+#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-
+#include <linux/slab.h>
 #define SI5351A_CLASS_NAME "si5351x_Out"
 #define SI5351A_DEV_NAME "si5351x"
 
@@ -33,6 +35,7 @@ ssize_t led_write(struct file *file, const char __user *ubuf, size_t size,
   switch ((int)file->private_data) {
   case 0:
     printk("mydev0\n");
+    clk_set_rate(clk_dev->clks[0], 1000000); // 设置第一个时钟频率为1MHz
     break;
   }
   return size;
@@ -56,25 +59,26 @@ struct file_operations si5351a_fops = {
 
 int si5351a_user_probe(struct platform_device *pdev) {
   struct clk *clk = NULL;
-  const char *const *clk_names = NULL;
-  int i, count;
+  int i = 0, count = 0;
   struct cdev *cdev = NULL;
   int ret;
   dev_t dev_c;
   struct class *cls = NULL;
   int major = 0; // 获取申请到的主设备号
   int minor = 0; // 获取申请到的次设备号
+  struct device *dev;
 
   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   clk_dev = devm_kzalloc(&pdev->dev, sizeof(*clk_dev), GFP_KERNEL);
-  if (!clk_dev)
+  if (!clk_dev) {
+    dev_err(&pdev->dev, "devm_kzalloc err\n");
     return -ENOMEM;
+  }
 
   clk_dev->dev = &pdev->dev;
-
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   /* first, get clocks from device tree */
-  count =
-      of_count_phandle_with_args(pdev->dev.of_node, "clocks", "#clock-cells");
+  count = of_property_count_u32_elems(pdev->dev.of_node, "clocks");
   if (count <= 0) {
     dev_err(&pdev->dev, "No clocks defined in device tree\n");
     ret = -ENOMEM;
@@ -82,75 +86,103 @@ int si5351a_user_probe(struct platform_device *pdev) {
   }
   clk_dev->num_clks = count;
 
-  clk_names = of_get_property(pdev->dev.of_node, "clock-names", NULL);
-  if (!clk_names) {
-    pr_err("No clock-names property found\n");
+  // printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+  // clk_names = of_get_property(pdev->dev.of_node, "clock-names", NULL);
+  // if (!clk_names) {
+  //   dev_err(&pdev->dev, "No clock-names property found\n");
+  //   ret = -ENOMEM;
+  //   goto err_free;
+  // }
+  dev_info(&pdev->dev, "[%s:%d]clk_dev->num_clks %d\n", __func__, __LINE__,
+           clk_dev->num_clks);
+
+  // for (i = 0; i < clk_dev->num_clks; i++) {
+  //   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+  //   clk = of_clk_get(pdev->dev.of_node, i);
+  //   if (IS_ERR(clk)) {
+  //     dev_err(&pdev->dev, "Failed to get clock %d\n", i);
+  //     ret = -ENOMEM;
+  //     goto err_free;
+  //   }
+  //   clk_dev->clks[i] = clk;
+  //   dev_info(&pdev->dev, "clk_prepare\n");
+  //   // clk_unprepare(clk);
+  //   clk_prepare(clk);
+  // }
+
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+  clk = devm_clk_get(&pdev->dev, "clkout0");
+  if (IS_ERR(clk)) {
+    dev_err(&pdev->dev, "Failed to get clock %d\n", i);
     ret = -ENOMEM;
     goto err_free;
   }
+  dev_info(&pdev->dev, "clk_prepare\n");
+  // clk_unprepare(clk);
+  clk_prepare(clk);
+  clk_dev->num_clks = 1; // 只使用一个时钟
 
-  for (i = 0; i < clk_dev->num_clks; i++) {
-    clk = devm_clk_get(&pdev->dev, clk_names[i]);
-    if (IS_ERR(clk)) {
-      dev_err(&pdev->dev, "Failed to get clock %d\n", i);
-      ret = -ENOMEM;
-      goto err_free;
-    }
-    dev_info(&pdev->dev, "Clock %d: %s\n", i, clk_names[i]);
-    clk_dev->clks[i] = clk;
-    clk_unprepare(clk);
-  }
-
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   cdev = cdev_alloc(); // 字符设备结构体申请内存
   if (cdev == NULL) {
-    printk("[%s,%s,%d]cdev_alloc err\n", __FILE__, __func__, __LINE__);
+    dev_err(&pdev->dev, "[%s,%s,%d]cdev_alloc err\n", __FILE__, __func__,
+            __LINE__);
     ret = -ENOMEM;
     goto err_free;
   }
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   cdev_init(cdev, &si5351a_fops); // 初始化字符设备结构体
 
   ret = alloc_chrdev_region(&dev_c, 0, clk_dev->num_clks, SI5351A_DEV_NAME);
   if (ret) {
-    printk("[%s,%s,%d]alloc_chrdev_region err\n", __FILE__, __func__, __LINE__);
+    dev_err(&pdev->dev, "[%s,%s,%d]alloc_chrdev_region err\n", __FILE__,
+            __func__, __LINE__);
     ret = -ENOMEM;
     goto err_free;
   }
-  major = MAJOR(dev_c);   // 获取申请到的主设备号
-  minor = MINOR(dev_c);   // 获取申请到的次设备号
-
+  major = MAJOR(dev_c); // 获取申请到的主设备号
+  minor = MINOR(dev_c); // 获取申请到的次设备号
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   clk_dev->major = major; // 保存主设备号
   clk_dev->minor = minor; // 保存次设备号
 
   ret = cdev_add(cdev, MKDEV(major, minor),
                  clk_dev->num_clks); // 按设备号注册设备
   if (ret) {
-    printk("[%s,%s,%d]cedv_add err\n", __FILE__, __func__, __LINE__);
+    dev_err(&pdev->dev, "[%s,%s,%d]cedv_add err\n", __FILE__, __func__,
+            __LINE__);
     ret = -ENOMEM;
     goto err_free;
   }
   clk_dev->cdev = cdev;
-
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   // 2.注册设备节点
   cls = class_create(THIS_MODULE, SI5351A_CLASS_NAME); // 提交设备节点目录
   if (IS_ERR(cls)) {
-    printk("[%s,%s,%d]class_create err\n", __FILE__, __func__, __LINE__);
+    dev_err(&pdev->dev, "[%s,%s,%d]class_create err\n", __FILE__, __func__,
+            __LINE__);
     ret = PTR_ERR(cls);
     goto err_free;
   }
   clk_dev->cls = cls;
-
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   for (i = 0; i < clk_dev->num_clks; i++) {
     // 提交设备节点文件名
-    struct device *dev =
-        device_create(cls, NULL, MKDEV(major, i), NULL, "my_led%d", i);
+    printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+    if (!cls)
+      dev_err(&pdev->dev, "[%s,%d]cls err\n", __func__, __LINE__);
+
+    dev = device_create(cls, NULL, MKDEV(major, i), NULL, "si5351a_out%d", i);
     if (IS_ERR(dev)) {
-      printk("[%s,%s,%d]device_create err\n", __FILE__, __func__, __LINE__);
+      dev_err(&pdev->dev, "[%s,%s,%d]device_create err\n", __FILE__, __func__,
+              __LINE__);
       ret = PTR_ERR(dev);
       goto err_free;
     }
+    printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
     clk_dev->devs[i] = dev;
   }
-
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   return 0;
 
 err_free:
@@ -164,10 +196,11 @@ err_free:
   if (cdev)
     cdev_del(cdev); // 注销字符设备
 
-  unregister_chrdev_region(MKDEV(major, minor), count); // 注销设备号
+  unregister_chrdev_region(MKDEV(major, minor),
+                           clk_dev->num_clks); // 注销设备号
 
   if (cdev)
-    cdev_put(cdev); // 清除字符设备结构体的内存
+    kfree(cdev); // 清除字符设备结构体的内存
 
   for (i = 0; i < clk_dev->num_clks; i++) {
     if (clk_dev->clks[i]) {
@@ -175,7 +208,7 @@ err_free:
       devm_clk_put(&pdev->dev, clk_dev->clks[i]);
     }
   }
-  devm_kfree(&pdev->dev, clk_dev->clks);
+  devm_kfree(&pdev->dev, clk_dev);
   return ret;
 }
 
@@ -183,7 +216,8 @@ int si5351a_user_remove(struct platform_device *pdev) {
   int i;
   for (i = 0; i < clk_dev->num_clks; i++) {
     if (clk_dev->cls)
-      device_destroy(clk_dev->cls, MKDEV(clk_dev->major, i)); // 注销设备节点文件名
+      device_destroy(clk_dev->cls,
+                     MKDEV(clk_dev->major, i)); // 注销设备节点文件名
   }
   if (clk_dev->cls)
     class_destroy(clk_dev->cls); // 注销设备节点目录
@@ -195,12 +229,13 @@ int si5351a_user_remove(struct platform_device *pdev) {
                            clk_dev->num_clks); // 注销设备号
 
   if (clk_dev->cdev)
-    cdev_put(clk_dev->cdev); // 清除字符设备结构体的内存
+    kfree(clk_dev->cdev); // 清除字符设备结构体的内存
 
   for (i = 0; i < clk_dev->num_clks; i++) {
     if (clk_dev->clks[i])
       devm_clk_put(&pdev->dev, clk_dev->clks[i]);
   }
+  devm_kfree(&pdev->dev, clk_dev->clks);
   devm_kfree(&pdev->dev, clk_dev->clks);
   return 0;
 }
