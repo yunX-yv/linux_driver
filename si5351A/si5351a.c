@@ -15,6 +15,9 @@ struct output_clock_device {
   struct device **devs;
   struct cdev *cdev;
   int num_clks;
+  struct class *cls;
+  int major;
+  int minor;
 };
 static struct output_clock_device *clk_dev;
 
@@ -52,16 +55,17 @@ struct file_operations si5351a_fops = {
 };
 
 int si5351a_user_probe(struct platform_device *pdev) {
-  struct clk *clk;
+  struct clk *clk = NULL;
   const char *const *clk_names = NULL;
   int i, count;
-  struct cdev *cdev;
+  struct cdev *cdev = NULL;
   int ret;
   dev_t dev_c;
-  struct class *cls;
-  int major; // 获取申请到的主设备号
-  int minor; // 获取申请到的次设备号
+  struct class *cls = NULL;
+  int major = 0; // 获取申请到的主设备号
+  int minor = 0; // 获取申请到的次设备号
 
+  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   clk_dev = devm_kzalloc(&pdev->dev, sizeof(*clk_dev), GFP_KERNEL);
   if (!clk_dev)
     return -ENOMEM;
@@ -108,26 +112,32 @@ int si5351a_user_probe(struct platform_device *pdev) {
   ret = alloc_chrdev_region(&dev_c, 0, clk_dev->num_clks, SI5351A_DEV_NAME);
   if (ret) {
     printk("[%s,%s,%d]alloc_chrdev_region err\n", __FILE__, __func__, __LINE__);
+    ret = -ENOMEM;
     goto err_free;
   }
-  major = MAJOR(dev_c); // 获取申请到的主设备号
-  minor = MINOR(dev_c); // 获取申请到的次设备号
+  major = MAJOR(dev_c);   // 获取申请到的主设备号
+  minor = MINOR(dev_c);   // 获取申请到的次设备号
+
+  clk_dev->major = major; // 保存主设备号
+  clk_dev->minor = minor; // 保存次设备号
 
   ret = cdev_add(cdev, MKDEV(major, minor),
                  clk_dev->num_clks); // 按设备号注册设备
   if (ret) {
     printk("[%s,%s,%d]cedv_add err\n", __FILE__, __func__, __LINE__);
+    ret = -ENOMEM;
     goto err_free;
   }
+  clk_dev->cdev = cdev;
 
   // 2.注册设备节点
-  cls =
-      class_create(THIS_MODULE, SI5351A_CLASS_NAME); // 提交设备节点目录
+  cls = class_create(THIS_MODULE, SI5351A_CLASS_NAME); // 提交设备节点目录
   if (IS_ERR(cls)) {
     printk("[%s,%s,%d]class_create err\n", __FILE__, __func__, __LINE__);
     ret = PTR_ERR(cls);
     goto err_free;
   }
+  clk_dev->cls = cls;
 
   for (i = 0; i < clk_dev->num_clks; i++) {
     // 提交设备节点文件名
@@ -145,6 +155,21 @@ int si5351a_user_probe(struct platform_device *pdev) {
 
 err_free:
   for (i = 0; i < clk_dev->num_clks; i++) {
+    if (cls)
+      device_destroy(cls, MKDEV(major, i)); // 注销设备节点文件名
+  }
+  if (cls)
+    class_destroy(cls); // 注销设备节点目录
+
+  if (cdev)
+    cdev_del(cdev); // 注销字符设备
+
+  unregister_chrdev_region(MKDEV(major, minor), count); // 注销设备号
+
+  if (cdev)
+    cdev_put(cdev); // 清除字符设备结构体的内存
+
+  for (i = 0; i < clk_dev->num_clks; i++) {
     if (clk_dev->clks[i]) {
       clk_unprepare(clk_dev->clks[i]);
       devm_clk_put(&pdev->dev, clk_dev->clks[i]);
@@ -156,6 +181,22 @@ err_free:
 
 int si5351a_user_remove(struct platform_device *pdev) {
   int i;
+  for (i = 0; i < clk_dev->num_clks; i++) {
+    if (clk_dev->cls)
+      device_destroy(clk_dev->cls, MKDEV(clk_dev->major, i)); // 注销设备节点文件名
+  }
+  if (clk_dev->cls)
+    class_destroy(clk_dev->cls); // 注销设备节点目录
+
+  if (clk_dev->cdev)
+    cdev_del(clk_dev->cdev); // 注销字符设备
+
+  unregister_chrdev_region(MKDEV(clk_dev->major, clk_dev->minor),
+                           clk_dev->num_clks); // 注销设备号
+
+  if (clk_dev->cdev)
+    cdev_put(clk_dev->cdev); // 清除字符设备结构体的内存
+
   for (i = 0; i < clk_dev->num_clks; i++) {
     if (clk_dev->clks[i])
       devm_clk_put(&pdev->dev, clk_dev->clks[i]);
@@ -170,7 +211,7 @@ static const struct platform_device_id si5351a_id_table[] = {
 };
 
 static const struct of_device_id si5351a_of_table[] = {
-    {.compatible = "Silicon,si5351a-usr"}, {}};
+    {.compatible = "si5351a-usr"}, {}};
 
 static struct platform_driver user_drv = {
     .probe = si5351a_user_probe,
