@@ -1,4 +1,3 @@
-#include <asm/uaccess.h>
 #include <linux/cdev.h>
 #include <linux/clk.h>
 #include <linux/device.h>
@@ -8,13 +7,17 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
+
+#include "si5351a_clkout.h"
+
 #define SI5351A_CLASS_NAME "si5351x_Out"
 #define SI5351A_DEV_NAME "si5351x"
 
 struct output_clock_device {
   struct device *dev;
-  struct clk **clks;
-  struct device **devs;
+  struct clk *clks[3U];
+  struct device *devs[3U];
   struct cdev *cdev;
   int num_clks;
   struct class *cls;
@@ -23,38 +26,89 @@ struct output_clock_device {
 };
 static struct output_clock_device *clk_dev;
 
-ssize_t led_read(struct file *file, char __user *ubuf, size_t size,
-                 loff_t *loft) {
-  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+long clkdev_ioctl(struct file *file, unsigned int request, unsigned long args) {
+  // int ret;
+  switch (request) {
+  case SI5351A_ON:
+    if (clk_dev->clks[(int)file->private_data] == NULL) {
+      printk(KERN_ERR "Clock not found for index %d\n",
+             (int)file->private_data);
+      return -EINVAL;
+    }
+    clk_prepare(clk_dev->clks[(int)file->private_data]);
+    break;
+  case SI5351A_OFF:
+    if (clk_dev->clks[(int)file->private_data] == NULL) {
+      printk(KERN_ERR "Clock not found for index %d\n",
+             (int)file->private_data);
+      return -EINVAL;
+    }
+    clk_unprepare(clk_dev->clks[(int)file->private_data]);
+    break;
+  default:
+    break;
+  }
   return 0;
 }
-ssize_t led_write(struct file *file, const char __user *ubuf, size_t size,
-                  loff_t *loft) {
-  printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+
+static ssize_t clkdev_read(struct file *file, char __user *ubuf, size_t size,
+                           loff_t *loft) {
+  unsigned long rate;
+  printk("[%s:%d]file->private_data : %d\n", __func__, __LINE__,
+         (int)file->private_data);
 
   switch ((int)file->private_data) {
   case 0:
-    printk("mydev0\n");
-    clk_set_rate(clk_dev->clks[0], 1000000); // 设置第一个时钟频率为1MHz
+    rate = clk_get_rate(clk_dev->clks[0]); // 设置第一个时钟频率为1MHz
+    if (copy_to_user(ubuf, &rate, sizeof(rate))) {
+      printk(KERN_ERR "Failed to copy data to user space\n");
+      return -EFAULT;
+    }
+    break;
+  default:
+    break;
+  }
+  return 0;
+}
+static ssize_t clkdev_write(struct file *file, const char __user *ubuf,
+                            size_t size, loff_t *loft) {
+  unsigned long rate;
+  printk("[%s:%d]file->private_data : %d\n", __func__, __LINE__,
+         (int)file->private_data);
+
+  switch ((int)file->private_data) {
+  case 0:
+    if (copy_from_user(&rate, ubuf, sizeof(rate))) {
+      printk(KERN_ERR "Failed to copy data to user space\n");
+      return -EFAULT;
+    }
+    clk_set_rate(clk_dev->clks[0], rate); // 设置第一个时钟频率为1MHz
+    break;
+  default:
     break;
   }
   return size;
 }
-int led_open(struct inode *inode, struct file *file) {
+static int clkdev_open(struct inode *inode, struct file *file) {
   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   file->private_data = (void *)MINOR(inode->i_rdev); // 储存打开的设备的子设备号
+  if (clk_dev->clks[(int)file->private_data] == NULL) {
+    printk(KERN_ERR "Clock not found for index %d\n", (int)file->private_data);
+    return -EINVAL;
+  }
   return 0;
 }
-int led_release(struct inode *inode, struct file *file) {
+static int clkdev_release(struct inode *inode, struct file *file) {
   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   return 0;
 }
 
 struct file_operations si5351a_fops = {
-    .open = led_open,
-    .release = led_release,
-    .write = led_write,
-    .read = led_read,
+    .open = clkdev_open,
+    .release = clkdev_release,
+    .write = clkdev_write,
+    .read = clkdev_read,
+    .unlocked_ioctl = clkdev_ioctl,
 };
 
 int si5351a_user_probe(struct platform_device *pdev) {
@@ -77,8 +131,10 @@ int si5351a_user_probe(struct platform_device *pdev) {
 
   clk_dev->dev = &pdev->dev;
   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+
   /* first, get clocks from device tree */
-  count = of_property_count_u32_elems(pdev->dev.of_node, "clocks");
+  count =
+      of_count_phandle_with_args(pdev->dev.of_node, "clocks", "#clock-cells");
   if (count <= 0) {
     dev_err(&pdev->dev, "No clocks defined in device tree\n");
     ret = -ENOMEM;
@@ -96,20 +152,21 @@ int si5351a_user_probe(struct platform_device *pdev) {
   dev_info(&pdev->dev, "[%s:%d]clk_dev->num_clks %d\n", __func__, __LINE__,
            clk_dev->num_clks);
 
-  // for (i = 0; i < clk_dev->num_clks; i++) {
-  //   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
-  //   clk = of_clk_get(pdev->dev.of_node, i);
-  //   if (IS_ERR(clk)) {
-  //     dev_err(&pdev->dev, "Failed to get clock %d\n", i);
-  //     ret = -ENOMEM;
-  //     goto err_free;
-  //   }
-  //   clk_dev->clks[i] = clk;
-  //   dev_info(&pdev->dev, "clk_prepare\n");
-  //   // clk_unprepare(clk);
-  //   clk_prepare(clk);
-  // }
-
+#if 1
+  for (i = 0; i < clk_dev->num_clks; i++) {
+    printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
+    clk = of_clk_get(pdev->dev.of_node, i);
+    if (IS_ERR(clk)) {
+      dev_err(&pdev->dev, "Failed to get clock %d\n", i);
+      ret = -ENOMEM;
+      goto err_free;
+    }
+    clk_dev->clks[i] = clk;
+    dev_info(&pdev->dev, "clk_prepare\n");
+    // clk_unprepare(clk);
+    clk_prepare(clk);
+  }
+#else
   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   clk = devm_clk_get(&pdev->dev, "clkout0");
   if (IS_ERR(clk)) {
@@ -120,7 +177,10 @@ int si5351a_user_probe(struct platform_device *pdev) {
   dev_info(&pdev->dev, "clk_prepare\n");
   // clk_unprepare(clk);
   clk_prepare(clk);
-  clk_dev->num_clks = 1; // 只使用一个时钟
+
+  clk_dev->clks[0] = clk; // 将获取到的时钟保存到结构体中
+  clk_dev->num_clks = 1;  // 只使用一个时钟
+#endif
 
   printk("[%s:%s:%d]\n", __FILE__, __func__, __LINE__);
   cdev = cdev_alloc(); // 字符设备结构体申请内存

@@ -27,7 +27,7 @@ ARCH ?= arm
 # GCC_INCLUDE := $(shell $(CROSS_COMPILE)gcc -print-file-name=include 2>/dev/null)
 
 # 编译选项
-EXTRA_CFLAGS := -DDEBUG -Wall -Werror
+EXTRA_CFLAGS := -DDEBUG -Wall -Werror 
 
 # 添加自动检测的包含路径
 # ifneq ($(SYSROOT),)
